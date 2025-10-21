@@ -1,0 +1,79 @@
+import cv2
+import pyfirmata2
+import time
+
+# === CONFIGURACIÓN INICIAL ===
+PORT = "COM5"        # cambia si tu Arduino está en otro puerto
+SERVO_X_PIN = 9
+SERVO_Y_PIN = 10
+STEP = 2             # incremento en grados por pulsación
+DELAY = 0.05         # retardo para estabilidad
+
+# === CONEXIÓN ARDUINO ===
+board = pyfirmata2.Arduino(PORT)
+servo_x = board.get_pin(f'd:{SERVO_X_PIN}:s')
+servo_y = board.get_pin(f'd:{SERVO_Y_PIN}:s')
+
+# === POSICIONES INICIALES ===
+angle_x = 90
+angle_y = 90
+servo_x.write(angle_x)
+servo_y.write(angle_y)
+
+print("=== MODO CALIBRACIÓN MANUAL ===")
+print("Usa las teclas:")
+print("  A/D → Pan izquierda/derecha")
+print("  W/S → Tilt arriba/abajo")
+print("  C   → Guardar (mostrar valores actuales)")
+print("  Q   → Salir\n")
+
+# === INICIALIZAR CÁMARA ===
+cap = cv2.VideoCapture(0)
+cap.set(3, 640)
+cap.set(4, 480)
+
+cv2.namedWindow("Calibracion", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Calibracion", 640, 360)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Dibuja una cruz central para referencia
+    h, w = frame.shape[:2]
+    cv2.line(frame, (w//2 - 20, h//2), (w//2 + 20, h//2), (0,255,0), 2)
+    cv2.line(frame, (w//2, h//2 - 20), (w//2, h//2 + 20), (0,255,0), 2)
+    cv2.putText(frame, f"Pan: {angle_x:.1f}  Tilt: {angle_y:.1f}", (10,30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
+    cv2.imshow("Calibracion", frame)
+
+    key = cv2.waitKey(1) & 0xFF
+
+    # === CONTROLES ===
+    if key == ord('a'):      # izquierda
+        angle_x = max(0, angle_x - STEP)
+        servo_x.write(angle_x)
+    elif key == ord('d'):    # derecha
+        angle_x = min(180, angle_x + STEP)
+        servo_x.write(angle_x)
+    elif key == ord('w'):    # arriba
+        angle_y = min(180, angle_y + STEP)
+        servo_y.write(angle_y)
+    elif key == ord('s'):    # abajo
+        angle_y = max(0, angle_y - STEP)
+        servo_y.write(angle_y)
+
+    elif key == ord('c'):    # imprimir calibración actual
+        print(f"[CALIBRACIÓN] Pan={angle_x:.1f}°, Tilt={angle_y:.1f}°")
+        print("Apunta el láser al centro y anota estos valores.\n")
+
+    elif key == ord('q'):
+        print("Saliendo del modo de calibración...")
+        break
+
+    time.sleep(DELAY)
+
+cap.release()
+cv2.destroyAllWindows()
+board.exit()
