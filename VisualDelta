@@ -1,0 +1,92 @@
+import cv2
+import numpy as np
+
+# ==== CONFIGURACIÓN ====
+TEMPLATE_PATH = "C:\\Users\\aabm7\\Downloads\\Cartera.jpg"   # imagen del objeto
+SCALE = 0.4                     # escala de plantilla
+THRESHOLD_MATCH = 0.6           # sensibilidad de matchTemplate
+
+# ==== CARGA PLANTILLA ====
+template = cv2.imread(TEMPLATE_PATH, 0)
+template = cv2.resize(template, (0,0), fx=SCALE, fy=SCALE)
+h, w = template.shape[:2]
+
+# ==== INICIALIZAR CÁMARA ====
+cap = cv2.VideoCapture(0)
+cap.set(3, 1280)
+cap.set(4, 720)
+
+cv2.namedWindow("DeltaVisual", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("DeltaVisual", 640, 360)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # ==== OBJETO (módulo 1) ====
+    res = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    obj_found, obj_center = False, None
+    if max_val >= THRESHOLD_MATCH:
+        obj_found = True
+        x, y = max_loc
+        cx_obj, cy_obj = x + w//2, y + h//2
+        obj_center = (cx_obj, cy_obj)
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
+        cv2.circle(frame, obj_center, 5, (0,255,0), -1)
+        cv2.putText(frame, f"OBJ ({cx_obj},{cy_obj})", (x, y-10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+
+    # ==== LÁSER (módulo 2) ====
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_red1 = np.array([0, 120, 150])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([160, 120, 150])
+    upper_red2 = np.array([179, 255, 255])
+    mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+    mask = cv2.GaussianBlur(mask, (9,9), 0)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    laser_found, laser_center = False, None
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        if area > 5:
+            (x, y), r = cv2.minEnclosingCircle(c)
+            cx_las, cy_las = int(x), int(y)
+            laser_center = (cx_las, cy_las)
+            laser_found = True
+            cv2.circle(frame, (cx_las, cy_las), int(r)+8, (0,0,255), 2)
+            cv2.putText(frame, f"LASER ({cx_las},{cy_las})", (cx_las+10, cy_las-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+
+    # ==== DELTA / DIFERENCIA ====
+    if obj_found and laser_found:
+        dx = obj_center[0] - laser_center[0]
+        dy = obj_center[1] - laser_center[1]
+        cv2.line(frame, obj_center, laser_center, (255,255,0), 2)
+        cv2.putText(frame, f"DELTA ({dx:+d}, {dy:+d})", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
+        cv2.putText(frame, "LOCKED ON TARGET", (50, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+        print(f"Δx={dx:+d}, Δy={dy:+d}")
+
+    elif obj_found and not laser_found:
+        cv2.putText(frame, "WAITING LASER", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,255), 2)
+    elif laser_found and not obj_found:
+        cv2.putText(frame, "WAITING OBJECT", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,255), 2)
+    else:
+        cv2.putText(frame, "NO DETECTION", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,255), 2)
+
+    cv2.imshow("DeltaVisual", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
