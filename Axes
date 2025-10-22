@@ -1,0 +1,61 @@
+import cv2
+import numpy as np
+
+# === CONFIGURACIÓN ===
+template_path = r"C:\Users\aabm7\Downloads\Cartera.jpg"  # Ajusta la ruta si es necesario
+scale_template = 0.3  # Escala para reducir el tamaño del template
+center_x, center_y = 640, 360  # Centro de la imagen (ajusta si tu cámara tiene otra resolución)
+
+# === CARGA TEMPLATE ===
+template = cv2.imread(template_path, 0)
+if template is None:
+    raise FileNotFoundError("No se encontró la imagen de la cartera. Verifica la ruta.")
+template = cv2.resize(template, (0, 0), fx=scale_template, fy=scale_template)
+h, w = template.shape[:2]
+
+print("Tamaño del template:", template.shape)
+
+# === CÁMARA ===
+cap = cv2.VideoCapture(0)
+cap.set(3, 1280)
+cap.set(4, 720)
+cv2.namedWindow("Axes Diagnostic", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Axes Diagnostic", 640, 360)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # === DETECCIÓN ===
+    result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+    if max_val > 0.6:  # nivel mínimo de coincidencia
+        x, y = max_loc
+        cx, cy = x + w // 2, y + h // 2
+
+        # Dibujar detección
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.circle(frame, (cx, cy), 6, (0, 0, 255), -1)
+        cv2.line(frame, (center_x, center_y), (cx, cy), (255, 255, 0), 2)
+
+        dx = cx - center_x
+        dy = cy - center_y
+
+        cv2.putText(frame, f"dx={dx:+d}, dy={dy:+d}", (40, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    else:
+        cv2.putText(frame, "NO OBJECT DETECTED", (40, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+    # === Mostrar ejes y centro ===
+    cv2.circle(frame, (center_x, center_y), 5, (0, 255, 255), -1)
+    cv2.imshow("Axes Diagnostic", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()

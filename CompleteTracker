@@ -7,44 +7,67 @@ import time
 PORT = "COM5"
 SERVO_X_PIN = 9
 SERVO_Y_PIN = 10
-offset_x = 110   # desde calibración
-offset_y = 82
-Kp_x = 0.12
-Kp_y = 0.12
+
+# Calibración base
+offset_x = 42
+offset_y = 2
+Kp_x = 0.25
+Kp_y = 0.25
 deadband = 8
-scale_template = 0.4
-thresh_match = 0.6
+
+# Relación píxel → grados aproximada (ajusta según tu cámara)
+deg_per_px_x = 0.047
+deg_per_px_y = 0.055
+
+# === LÍMITES MECÁNICOS REALES (DE CALIBRACIÓN) ===
+# Coordenadas (Pan, Tilt)
+# Inferior izq (68,12) | Inferior der (30,14)
+# Superior izq (62,0)  | Superior der (26,8)
+PAN_MIN, PAN_MAX = 26, 68
+TILT_MIN, TILT_MAX = 0, 14
 
 # === CONEXIÓN ARDUINO ===
 board = pyfirmata2.Arduino(PORT)
 servo_x = board.get_pin(f'd:{SERVO_X_PIN}:s')
 servo_y = board.get_pin(f'd:{SERVO_Y_PIN}:s')
 
-# posiciones iniciales
-servo_x_deg = offset_x
-servo_y_deg = offset_y
-servo_x.write(servo_x_deg)
-servo_y.write(servo_y_deg)
-print(f"Servo inicial -> Pan: {servo_x_deg}°, Tilt: {servo_y_deg}°")
+# Movimiento inicial suave
+def mover_suavemente(servo, actual, objetivo, paso=1, delay=0.02):
+    if objetivo > actual:
+        rango = range(int(actual), int(objetivo) + 1, paso)
+    else:
+        rango = range(int(actual), int(objetivo) - 1, -paso)
+    for a in rango:
+        servo.write(a)
+        time.sleep(delay)
+    return objetivo
 
-# === CARGA PLANTILLA OBJETO ===
+print("🟡 Moviendo a posición de calibración lenta...")
+servo_x_deg = mover_suavemente(servo_x, 90, offset_x, paso=1, delay=0.02)
+servo_y_deg = mover_suavemente(servo_y, 90, offset_y, paso=1, delay=0.02)
+print(f"✅ Servos listos -> Pan: {servo_x_deg}°, Tilt: {servo_y_deg}°")
+
+# === TEMPLATE DEL OBJETO ===
 template = cv2.imread("C:\\Users\\aabm7\\Downloads\\Cartera.jpg", 0)
-template = cv2.resize(template, (0,0), fx=scale_template, fy=scale_template)
+if template is None:
+    raise FileNotFoundError("No se encontró la imagen de la cartera.")
+template = cv2.resize(template, (0, 0), fx=0.4, fy=0.4)
 h, w = template.shape[:2]
 
-# === INICIALIZAR CÁMARA ===
+# === CÁMARA ===
 cap = cv2.VideoCapture(0)
 cap.set(3, 1280)
 cap.set(4, 720)
-cv2.namedWindow("AutoControl", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("AutoControl", 640, 360)
+cv2.namedWindow("DeltaVisual", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("DeltaVisual", 640, 360)
 
+# === DETECCIÓN ===
 def detectar_objeto(frame_gray):
     res = cv2.matchTemplate(frame_gray, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val >= thresh_match:
+    if max_val >= 0.6:
         x, y = max_loc
-        cx, cy = x + w//2, y + h//2
+        cx, cy = x + w // 2, y + h // 2
         return True, (cx, cy)
     return False, None
 
@@ -55,7 +78,7 @@ def detectar_laser(frame):
     lower2 = np.array([160, 120, 150])
     upper2 = np.array([179, 255, 255])
     mask = cv2.inRange(hsv, lower1, upper1) + cv2.inRange(hsv, lower2, upper2)
-    mask = cv2.GaussianBlur(mask, (9,9), 0)
+    mask = cv2.GaussianBlur(mask, (9, 9), 0)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         c = max(contours, key=cv2.contourArea)
@@ -64,49 +87,60 @@ def detectar_laser(frame):
             return True, (int(x), int(y))
     return False, None
 
+# === CONTROL ===
 def actualizar_servos(dx, dy):
     global servo_x_deg, servo_y_deg
+
     if abs(dx) < deadband: dx = 0
     if abs(dy) < deadband: dy = 0
 
-    servo_x_deg += Kp_x * dx
-    servo_y_deg += Kp_y * dy  # invertido: en imagen Y crece hacia abajo
+    delta_x = Kp_x * dx * deg_per_px_x
+    delta_y = Kp_y * dy * deg_per_px_y
 
-    servo_x_deg = max(0, min(180, servo_x_deg))
-    servo_y_deg = max(0, min(180, servo_y_deg))
+    servo_x_deg += delta_x
+    servo_y_deg -= delta_y  # invertido: Y crece hacia abajo
+
+    # límites mecánicos (PWM reales)
+    servo_x_deg = np.clip(servo_x_deg, PAN_MIN, PAN_MAX)
+    servo_y_deg = np.clip(servo_y_deg, TILT_MIN, TILT_MAX)
 
     servo_x.write(servo_x_deg)
     servo_y.write(servo_y_deg)
     return servo_x_deg, servo_y_deg
 
+# === LOOP PRINCIPAL ===
 while True:
     ret, frame = cap.read()
     if not ret:
         break
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     obj_ok, obj_c = detectar_objeto(gray)
     laser_ok, las_c = detectar_laser(frame)
 
     if obj_ok:
-        cv2.circle(frame, obj_c, 5, (0,255,0), -1)
+        cv2.circle(frame, obj_c, 5, (0, 255, 0), -1)
     if laser_ok:
-        cv2.circle(frame, las_c, 5, (0,0,255), -1)
+        cv2.circle(frame, las_c, 5, (0, 0, 255), -1)
 
     if obj_ok and laser_ok:
         dx = obj_c[0] - las_c[0]
         dy = obj_c[1] - las_c[1]
-        cv2.line(frame, obj_c, las_c, (255,255,0), 2)
-        cv2.putText(frame, f"Δx={dx:+d} Δy={dy:+d}", (50,50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+        cv2.line(frame, las_c, obj_c, (255, 255, 0), 2)
+        cv2.putText(frame, f"DELTA ({dx:+d}, {dy:+d})", (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         servo_x_deg, servo_y_deg = actualizar_servos(dx, dy)
-        cv2.putText(frame, f"Pan={servo_x_deg:.1f} Tilt={servo_y_deg:.1f}",
-                    (50,90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
+        cv2.putText(frame, "LOCKED ON TARGET", (50, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
     else:
         msg = "WAITING LASER" if obj_ok else "WAITING OBJECT"
-        cv2.putText(frame, msg, (50,50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+        cv2.putText(frame, msg, (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-    cv2.imshow("AutoControl", frame)
+    # dibuja la zona visual de seguridad
+    cv2.rectangle(frame, (200, 100), (1080, 620), (0, 255, 255), 2)
+    cv2.imshow("DeltaVisual", frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
