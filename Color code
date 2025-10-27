@@ -1,0 +1,88 @@
+import serial
+import time
+
+class clMotorCmd:
+    def __init__(self, serial_port="/dev/ttyUSB0", baudrate=9600):
+        self.ser = serial.Serial(serial_port, baudrate, timeout=1)
+        time.sleep(2)  # Espera para que el Arduino inicie correctamente
+        print("[OK] Conexión serial establecida con Arduino")
+
+        # Ángulos iniciales de los servos
+        self.pan_angle = 90
+        self.tilt_angle = 90
+
+        # Límites de movimiento de servos
+        self.min_angle = 0
+        self.max_angle = 180
+
+    def setHome(self):
+        """Mueve ambos servos a posición central."""
+        self.pan_angle = 90
+        self.tilt_angle = 90
+        self._send_command("HOME")
+        print("[CMD] Posición inicial (home) establecida")
+
+    def goHome(self):
+        """Envía comando para ir a home."""
+        self._send_command("HOME")
+        self.pan_angle = 90
+        self.tilt_angle = 90
+        print("[CMD] Volviendo a home")
+
+    def moveMotor(self, axis, direction, step=3):
+        """
+        Control manual de movimiento.
+        axis: 0 = horizontal (pan), 1 = vertical (tilt)
+        direction: 0 = izquierda/abajo, 1 = derecha/arriba
+        """
+        if axis == 0:
+            if direction == 0:
+                self.pan_angle = max(self.min_angle, self.pan_angle - step)
+            else:
+                self.pan_angle = min(self.max_angle, self.pan_angle + step)
+            self._send_command(f"S0:{int(self.pan_angle)}")
+
+        elif axis == 1:
+            if direction == 0:
+                self.tilt_angle = max(self.min_angle, self.tilt_angle - step)
+            else:
+                self.tilt_angle = min(self.max_angle, self.tilt_angle + step)
+            self._send_command(f"S1:{int(self.tilt_angle)}")
+
+        print(f"[CMD] Servo {axis} → {int(self.pan_angle if axis==0 else self.tilt_angle)}°")
+
+    def guideMotor(self, vx, vy, gain=0.1):
+        """
+        Corrige la posición del láser en función de la velocidad estimada por Kalman.
+        vx, vy: desplazamiento del objeto (pixeles)
+        gain: sensibilidad del movimiento
+        """
+        # Mapeo de desplazamiento a grados (ajústalo si los servos son muy sensibles)
+        delta_pan = vx * gain
+        delta_tilt = vy * gain
+
+        # Actualizar ángulos
+        self.pan_angle = self._clip_angle(self.pan_angle + delta_pan)
+        self.tilt_angle = self._clip_angle(self.tilt_angle - delta_tilt)  # invertido por orientación de cámara
+
+        # Enviar comandos al Arduino
+        self._send_command(f"S0:{int(self.pan_angle)}")
+        self._send_command(f"S1:{int(self.tilt_angle)}")
+
+        print(f"[TRACK] Pan={int(self.pan_angle)}°, Tilt={int(self.tilt_angle)}°")
+
+    def _clip_angle(self, angle):
+        """Limita los ángulos entre 0 y 180 grados."""
+        return max(self.min_angle, min(self.max_angle, angle))
+
+    def _send_command(self, cmd):
+        """Envía comando serial al Arduino."""
+        try:
+            self.ser.write((cmd + "\n").encode())
+        except serial.SerialException:
+            print("[ERROR] No se pudo enviar comando al Arduino")
+
+    def close(self):
+        """Cierra el puerto serial."""
+        self.ser.close()
+        print("[CERRADO] Puerto serial cerrado")

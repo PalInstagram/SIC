@@ -3,7 +3,7 @@ import numpy as np
 
 # === CONFIGURACIÓN ===
 TEMPLATE_PATH = "C:\\Users\\aabm7\\Downloads\\Cartera.jpg"   # imagen base
-THRESHOLD_MATCH = 0.5           # nivel de coincidencia (0–1)
+THRESHOLD_MATCH = 0.4           # nivel de coincidencia (0–1)
 SCALE = 0.4                     # reduce tamaño de plantilla (ajusta si da error)
 
 # === CARGA DE PLANTILLA ===

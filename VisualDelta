@@ -4,7 +4,7 @@ import numpy as np
 # ==== CONFIGURACIÓN ====
 TEMPLATE_PATH = "C:\\Users\\aabm7\\Downloads\\Cartera.jpg"   # imagen del objeto
 SCALE = 0.4                     # escala de plantilla
-THRESHOLD_MATCH = 0.6           # sensibilidad de matchTemplate
+THRESHOLD_MATCH = 0.4         # sensibilidad de matchTemplate
 
 # ==== CARGA PLANTILLA ====
 template = cv2.imread(TEMPLATE_PATH, 0)

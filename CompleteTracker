@@ -15,16 +15,9 @@ Kp_x = 0.25
 Kp_y = 0.25
 deadband = 8
 
-# Relación píxel → grados aproximada (ajusta según tu cámara)
+# Relación píxel → grados aproximada
 deg_per_px_x = 0.047
 deg_per_px_y = 0.055
-
-# === LÍMITES MECÁNICOS REALES (DE CALIBRACIÓN) ===
-# Coordenadas (Pan, Tilt)
-# Inferior izq (68,12) | Inferior der (30,14)
-# Superior izq (62,0)  | Superior der (26,8)
-PAN_MIN, PAN_MAX = 26, 68
-TILT_MIN, TILT_MAX = 0, 14
 
 # === CONEXIÓN ARDUINO ===
 board = pyfirmata2.Arduino(PORT)
@@ -51,7 +44,18 @@ print(f"✅ Servos listos -> Pan: {servo_x_deg}°, Tilt: {servo_y_deg}°")
 template = cv2.imread("C:\\Users\\aabm7\\Downloads\\Cartera.jpg", 0)
 if template is None:
     raise FileNotFoundError("No se encontró la imagen de la cartera.")
-template = cv2.resize(template, (0, 0), fx=0.4, fy=0.4)
+
+# Escalado adaptativo para evitar error
+def escalar_template(template, frame_shape):
+    hF, wF = frame_shape[:2]
+    hT, wT = template.shape[:2]
+    if hT > hF or wT > wF:
+        scale = min(wF / wT, hF / hT) * 0.4
+        template = cv2.resize(template, (0, 0), fx=scale, fy=scale)
+    else:
+        template = cv2.resize(template, (0, 0), fx=0.4, fy=0.4)
+    return template
+
 h, w = template.shape[:2]
 
 # === CÁMARA ===
@@ -61,11 +65,30 @@ cap.set(4, 720)
 cv2.namedWindow("DeltaVisual", cv2.WINDOW_NORMAL)
 cv2.resizeWindow("DeltaVisual", 640, 360)
 
+# === FILTRO KALMAN ===
+kalman = cv2.KalmanFilter(4, 2)
+kalman.measurementMatrix = np.array([[1, 0, 0, 0],
+                                     [0, 1, 0, 0]], np.float32)
+kalman.transitionMatrix = np.array([[1, 0, 1, 0],
+                                    [0, 1, 0, 1],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]], np.float32)
+kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.01
+kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 1.5
+kalman.statePre = np.zeros((4, 1), np.float32)
+kalman.statePost = np.zeros((4, 1), np.float32)
+kalman_initialized = False
+
 # === DETECCIÓN ===
 def detectar_objeto(frame_gray):
+    global template, h, w
+    if template.shape[0] > frame_gray.shape[0] or template.shape[1] > frame_gray.shape[1]:
+        template = escalar_template(template, frame_gray.shape)
+        h, w = template.shape[:2]
+
     res = cv2.matchTemplate(frame_gray, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val >= 0.6:
+    if max_val >= 0.4:
         x, y = max_loc
         cx, cy = x + w // 2, y + h // 2
         return True, (cx, cy)
@@ -97,16 +120,17 @@ def actualizar_servos(dx, dy):
     delta_x = Kp_x * dx * deg_per_px_x
     delta_y = Kp_y * dy * deg_per_px_y
 
-    servo_x_deg += delta_x
-    servo_y_deg -= delta_y  # invertido: Y crece hacia abajo
+    servo_x_deg -= delta_x
+    servo_y_deg -= delta_y  # sin invertir tu eje
 
-    # límites mecánicos (PWM reales)
-    servo_x_deg = np.clip(servo_x_deg, PAN_MIN, PAN_MAX)
-    servo_y_deg = np.clip(servo_y_deg, TILT_MIN, TILT_MAX)
+    servo_x_deg = float(np.clip(servo_x_deg, 0, 180))
+    servo_y_deg = float(np.clip(servo_y_deg, 0, 180))
 
     servo_x.write(servo_x_deg)
     servo_y.write(servo_y_deg)
+
     return servo_x_deg, servo_y_deg
+
 
 # === LOOP PRINCIPAL ===
 while True:
@@ -118,27 +142,42 @@ while True:
     obj_ok, obj_c = detectar_objeto(gray)
     laser_ok, las_c = detectar_laser(frame)
 
+    # --- KALMAN ---
+    if obj_ok:
+        measurement = np.array([[np.float32(obj_c[0])],
+                                [np.float32(obj_c[1])]])
+        if not kalman_initialized:
+            kalman.statePost[:2, 0] = measurement[:, 0]
+            kalman_initialized = True
+        kalman.correct(measurement)
+
+    predicted = kalman.predict()
+    pred_x, pred_y = int(float(predicted[0][0])), int(float(predicted[1][0]))
+
+    cv2.circle(frame, (pred_x, pred_y), 5, (0, 255, 255), -1)
+    cv2.putText(frame, "KALMAN", (pred_x + 10, pred_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+    # --- VISUALIZACIÓN ---
     if obj_ok:
         cv2.circle(frame, obj_c, 5, (0, 255, 0), -1)
     if laser_ok:
         cv2.circle(frame, las_c, 5, (0, 0, 255), -1)
 
-    if obj_ok and laser_ok:
-        dx = obj_c[0] - las_c[0]
-        dy = obj_c[1] - las_c[1]
-        cv2.line(frame, las_c, obj_c, (255, 255, 0), 2)
+    if laser_ok and kalman_initialized:
+        dx = pred_x - las_c[0]
+        dy = pred_y - las_c[1]
+        cv2.line(frame, las_c, (pred_x, pred_y), (255, 255, 0), 2)
         cv2.putText(frame, f"DELTA ({dx:+d}, {dy:+d})", (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         servo_x_deg, servo_y_deg = actualizar_servos(dx, dy)
-        cv2.putText(frame, "LOCKED ON TARGET", (50, 90),
+        cv2.putText(frame, "TRACKING", (50, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
     else:
         msg = "WAITING LASER" if obj_ok else "WAITING OBJECT"
         cv2.putText(frame, msg, (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-    # dibuja la zona visual de seguridad
-    cv2.rectangle(frame, (200, 100), (1080, 620), (0, 255, 255), 2)
     cv2.imshow("DeltaVisual", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
